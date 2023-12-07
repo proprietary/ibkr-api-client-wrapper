@@ -3,6 +3,9 @@
 package net.zelcon.ibkr_api_client_wrapper;
 
 import java.time.Duration;
+
+import org.checkerframework.checker.nullness.qual.NonNull;
+
 import com.ib.client.*;
 import java.io.IOException;
 import java.lang.System.Logger;
@@ -11,7 +14,7 @@ import java.text.MessageFormat;
 public class EReaderThread {
     private static final Duration WAIT_FOR_CONNECTION_TIMMEOUT = Duration.ofSeconds(5);
 
-    private static final Duration STOP_THREAD_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration STOP_THREAD_TIMEOUT = Duration.ofSeconds(10);
 
     private static final Logger logger = System.getLogger(EReaderThread.class.getName());
 
@@ -20,14 +23,16 @@ public class EReaderThread {
     private EReader ereader;
     private Thread ereaderThread = new Thread(this::processMessageQueue);
 
-    private EReaderThread(final EClientSocket client, final EReaderSignal signal) {
+    private EReaderThread(@NonNull final EClientSocket client, @NonNull final EReaderSignal signal) {
+        if (client == null || signal == null)
+            throw new IllegalArgumentException("EReaderThread constructor arguments cannot be null");
         this.client = client;
         this.signal = signal;
-        assert this.client != null;
-        assert this.signal != null;
     }
 
-    public static EReaderThread start(final EClientSocket client, final EReaderSignal signal) {
+    public static EReaderThread start(@NonNull final EClientSocket client, @NonNull final EReaderSignal signal) {
+        if (client == null || signal == null)
+            throw new IllegalArgumentException("EReaderThread.start() arguments cannot be null");
         final EReaderThread that = new EReaderThread(client, signal);
         // Note: (and this is stupid, but that's the way TWS API works)
         // `EReader` must be constructed **after** `EClientSocket` is connected.
@@ -35,15 +40,16 @@ public class EReaderThread {
         that.ereader.start();
         that.ereaderThread.start();
         that.ereaderThread.setPriority(Thread.MAX_PRIORITY);
+        that.ereaderThread.setName("EReader Thread");
         return that;
     }
 
-    public synchronized void stop() {
+    public synchronized void close() {
+        ereaderThread.interrupt();
+        stopThread(ereaderThread);
         if (ereader == null) {
             throw new IllegalStateException("EReader should have been initialized by now");
         }
-        ereaderThread.interrupt();
-        stopThread(ereaderThread);
         ereader.interrupt();
         stopThread(ereader);
     }
@@ -61,7 +67,7 @@ public class EReaderThread {
                 try {
                     Thread.sleep(WAIT_FOR_CONNECTION_TIMMEOUT);
                 } catch (InterruptedException e) {
-                    return;
+                    break;
                 }
             }
         }

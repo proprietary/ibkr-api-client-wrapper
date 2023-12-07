@@ -42,3 +42,6 @@ hs_err_pid*
 replay_pid*
 
 .DS_Store
+.env
+.env*
+.envrc

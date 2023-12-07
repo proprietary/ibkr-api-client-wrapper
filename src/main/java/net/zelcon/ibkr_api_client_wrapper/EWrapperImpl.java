@@ -1,13 +1,27 @@
 package net.zelcon.ibkr_api_client_wrapper;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.stream.Collectors;
 import java.util.Set;
+import java.lang.System.Logger;
+import java.text.MessageFormat;
 
 import com.ib.client.*;
 
+import net.zelcon.ibkr_api_client_wrapper.errors.TWSException;
+import net.zelcon.ibkr_api_client_wrapper.response_types.ContractDetailsResponse;
+import net.zelcon.ibkr_api_client_wrapper.response_types.HistoricalBar;
+
 public class EWrapperImpl implements EWrapper {
+    private static final Logger logger = System.getLogger(EWrapperImpl.class.getName());
+    private final RequestBus requestBus;
+
+    public EWrapperImpl(final RequestBus requestBus) {
+        this.requestBus = requestBus;
+    }
 
     @Override
     public void tickPrice(int tickerId, int field, double price, TickAttrib attrib) {
@@ -94,26 +108,27 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void nextValidId(int orderId) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'nextValidId'");
+        logger.log(Logger.Level.INFO, "Next valid order ID: " + orderId);
+        RequestIdGenerator.getInstance().reset(orderId);
     }
 
     @Override
     public void contractDetails(int reqId, ContractDetails contractDetails) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'contractDetails'");
+        requestBus.getPublisher(reqId).ifPresent(publisher -> {
+            publisher.submit(new ContractDetailsResponse(reqId, contractDetails));
+        });
     }
 
     @Override
     public void bondContractDetails(int reqId, ContractDetails contractDetails) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'bondContractDetails'");
+        requestBus.getPublisher(reqId).ifPresent(publisher -> {
+            publisher.submit(new ContractDetailsResponse(reqId, contractDetails));
+        });
     }
 
     @Override
     public void contractDetailsEnd(int reqId) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'contractDetailsEnd'");
+        requestBus.getPublisher(reqId).ifPresent(IBReqPublisher::close);
     }
 
     @Override
@@ -149,8 +164,8 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void managedAccounts(String accountsList) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'managedAccounts'");
+        logger.log(Logger.Level.INFO, "Managed accounts: " + accountsList);
+        this.requestBus.getManagedAccountsPublisher().submit(accountsList);
     }
 
     @Override
@@ -161,8 +176,9 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void historicalData(int reqId, Bar bar) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'historicalData'");
+        this.requestBus.getPublisher(reqId).ifPresent(pub -> {
+            pub.submit(new HistoricalBar(reqId, bar));
+        });
     }
 
     @Override
@@ -193,14 +209,14 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void currentTime(long time) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'currentTime'");
+        logger.log(Logger.Level.INFO, "currentTime: " + time);
+        this.requestBus.getCurrentTimePublisher().submit(time);
     }
 
     @Override
     public void fundamentalData(int reqId, String data) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'fundamentalData'");
+        logger.log(Logger.Level.WARNING,
+                "Received `fundamentalData`: This is a deprecated TWS API method.");
     }
 
     @Override
@@ -289,32 +305,37 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void error(Exception e) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'error'");
+        logger.log(Logger.Level.ERROR, e.getMessage());
+        e.printStackTrace();
     }
 
     @Override
     public void error(String str) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'error'");
+        logger.log(Logger.Level.ERROR, str);
     }
 
     @Override
     public void error(int id, int errorCode, String errorMsg, String advancedOrderRejectJson) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'error'");
+        logger.log(Logger.Level.ERROR,
+                "Error: " + id + " " + errorCode + " " + errorMsg + " " + advancedOrderRejectJson);
+        requestBus.getPublisher(id).ifPresent(pub -> {
+            final var except = new TWSException(errorCode, errorMsg);
+            if (advancedOrderRejectJson != null && advancedOrderRejectJson.length() > 0) {
+                except.setAdvancedOrderRejectJson(advancedOrderRejectJson);
+            }
+            pub.closeExceptionally(except);
+        });
     }
 
     @Override
     public void connectionClosed() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'connectionClosed'");
+        logger.log(Logger.Level.INFO, "Connection closed");
+        requestBus.close();
     }
 
     @Override
     public void connectAck() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'connectAck'");
+        logger.log(Logger.Level.INFO, "Connection acknowledged");
     }
 
     @Override
@@ -364,8 +385,13 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void familyCodes(FamilyCode[] familyCodes) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'familyCodes'");
+        logger.log(Logger.Level.TRACE,
+                "Family Codes: " +
+                        Arrays.stream(familyCodes)
+                                .map(fc -> MessageFormat.format("FamilyCode: {0} (accountID={1})", fc.familyCodeStr(),
+                                        fc.accountID()))
+                                .collect(Collectors.joining(", ")));
+        this.requestBus.getFamilyCodesPublisher().submit(familyCodes);
     }
 
     @Override
@@ -376,8 +402,8 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void historicalDataEnd(int reqId, String startDateStr, String endDateStr) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'historicalDataEnd'");
+        logger.log(Logger.Level.TRACE, "historicalDataEnd: " + reqId + " " + startDateStr + " " + endDateStr);
+        requestBus.getPublisher(reqId).ifPresent(IBReqPublisher::close);
     }
 
     @Override
@@ -407,8 +433,14 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void newsProviders(NewsProvider[] newsProviders) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'newsProviders'");
+        logger.log(Logger.Level.TRACE,
+                "News Providers: " +
+                        Arrays.stream(newsProviders)
+                                .map(np -> MessageFormat.format("NewsProvider: {0} (code={1})", np.providerName(),
+                                        np.providerCode()))
+                                .collect(Collectors.joining(", ")));
+        this.requestBus.getNewsProvidersPublisher().submit(newsProviders);
+
     }
 
     @Override
@@ -564,5 +596,4 @@ public class EWrapperImpl implements EWrapper {
         // TODO Auto-generated method stub
         throw new UnsupportedOperationException("Unimplemented method 'userInfo'");
     }
-    
 }
