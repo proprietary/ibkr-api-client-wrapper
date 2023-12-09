@@ -12,15 +12,16 @@ import java.text.MessageFormat;
 import com.ib.client.*;
 
 import net.zelcon.ibkr_api_client_wrapper.errors.TWSException;
-import net.zelcon.ibkr_api_client_wrapper.response_types.ContractDetailsResponse;
-import net.zelcon.ibkr_api_client_wrapper.response_types.HistoricalBar;
+import net.zelcon.ibkr_api_client_wrapper.response_types.*;
 
 public class EWrapperImpl implements EWrapper {
     private static final Logger logger = System.getLogger(EWrapperImpl.class.getName());
-    private final RequestBus requestBus;
+    private final IBEmitterRepository emitters;
+    private final RequestIdGenerator requestIdGenerator;
 
-    public EWrapperImpl(final RequestBus requestBus) {
-        this.requestBus = requestBus;
+    public EWrapperImpl(final RequestIdGenerator requestIdGenerator, final IBEmitterRepository emitters) {
+        this.emitters = emitters;
+        this.requestIdGenerator = requestIdGenerator;
     }
 
     @Override
@@ -107,28 +108,35 @@ public class EWrapperImpl implements EWrapper {
     }
 
     @Override
-    public void nextValidId(int orderId) {
-        logger.log(Logger.Level.INFO, "Next valid order ID: " + orderId);
-        RequestIdGenerator.getInstance().reset(orderId);
+    public void nextValidId(int requestId) {
+        logger.log(Logger.Level.INFO, "Next valid order ID: " + requestId);
+        requestIdGenerator.reset(requestId);
     }
 
     @Override
     public void contractDetails(int reqId, ContractDetails contractDetails) {
-        requestBus.getPublisher(reqId).ifPresent(publisher -> {
-            publisher.submit(new ContractDetailsResponse(reqId, contractDetails));
+        final var resp = new ContractDetailsResponse(reqId, contractDetails);
+        logger.log(Logger.Level.TRACE, "contractDetails: " + resp);
+        emitters.<ContractDetailsResponse>getFlowableEmitter(reqId).ifPresent(emitter -> {
+            emitter.onNext(resp);
         });
     }
 
     @Override
     public void bondContractDetails(int reqId, ContractDetails contractDetails) {
-        requestBus.getPublisher(reqId).ifPresent(publisher -> {
-            publisher.submit(new ContractDetailsResponse(reqId, contractDetails));
+        final var resp = new ContractDetailsResponse(reqId, contractDetails);
+        logger.log(Logger.Level.TRACE, "bondContractDetails: " + resp);
+        emitters.<ContractDetailsResponse>getFlowableEmitter(reqId).ifPresent(emitter -> {
+            emitter.onNext(resp);
         });
     }
 
     @Override
     public void contractDetailsEnd(int reqId) {
-        requestBus.getPublisher(reqId).ifPresent(IBReqPublisher::close);
+        logger.log(Logger.Level.TRACE, "contractDetailsEnd: " + reqId);
+        emitters.<ContractDetailsResponse>getFlowableEmitter(reqId).ifPresent(emitter -> {
+            emitter.onComplete();
+        });
     }
 
     @Override
@@ -164,8 +172,10 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void managedAccounts(String accountsList) {
-        logger.log(Logger.Level.INFO, "Managed accounts: " + accountsList);
-        this.requestBus.getManagedAccountsPublisher().submit(accountsList);
+        logger.log(Logger.Level.TRACE, "Managed accounts: " + accountsList);
+        this.emitters.getObservableEmitter(ManagedAccountsResponse.class).ifPresent(emitter -> {
+            emitter.onNext(new ManagedAccountsResponse(accountsList));
+        });
     }
 
     @Override
@@ -176,8 +186,10 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void historicalData(int reqId, Bar bar) {
-        this.requestBus.getPublisher(reqId).ifPresent(pub -> {
-            pub.submit(new HistoricalBar(reqId, bar));
+        final var resp = new HistoricalBar(reqId, bar);
+        logger.log(Logger.Level.TRACE, "historicalData: " + resp);
+        this.emitters.<HistoricalBar>getFlowableEmitter(reqId).ifPresent(emitter -> {
+            emitter.onNext(resp);
         });
     }
 
@@ -210,7 +222,9 @@ public class EWrapperImpl implements EWrapper {
     @Override
     public void currentTime(long time) {
         logger.log(Logger.Level.INFO, "currentTime: " + time);
-        this.requestBus.getCurrentTimePublisher().submit(time);
+        this.emitters.<CurrentTimeResponse>getObservableEmitter(CurrentTimeResponse.class).ifPresent(emitter -> {
+            emitter.onNext(new CurrentTimeResponse(time));
+        });
     }
 
     @Override
@@ -318,19 +332,19 @@ public class EWrapperImpl implements EWrapper {
     public void error(int id, int errorCode, String errorMsg, String advancedOrderRejectJson) {
         logger.log(Logger.Level.ERROR,
                 "Error: " + id + " " + errorCode + " " + errorMsg + " " + advancedOrderRejectJson);
-        requestBus.getPublisher(id).ifPresent(pub -> {
+        this.emitters.<IBResponse>getFlowableEmitter(id).ifPresent(emitter -> {
             final var except = new TWSException(errorCode, errorMsg);
             if (advancedOrderRejectJson != null && advancedOrderRejectJson.length() > 0) {
                 except.setAdvancedOrderRejectJson(advancedOrderRejectJson);
             }
-            pub.closeExceptionally(except);
+            emitter.onError(except);
         });
     }
 
     @Override
     public void connectionClosed() {
         logger.log(Logger.Level.INFO, "Connection closed");
-        requestBus.close();
+        this.emitters.close();
     }
 
     @Override
@@ -391,7 +405,9 @@ public class EWrapperImpl implements EWrapper {
                                 .map(fc -> MessageFormat.format("FamilyCode: {0} (accountID={1})", fc.familyCodeStr(),
                                         fc.accountID()))
                                 .collect(Collectors.joining(", ")));
-        this.requestBus.getFamilyCodesPublisher().submit(familyCodes);
+        this.emitters.getObservableEmitter(FamilyCodesResponse.class).ifPresent(emitter -> {
+            emitter.onNext(new FamilyCodesResponse(familyCodes));
+        });
     }
 
     @Override
@@ -403,7 +419,9 @@ public class EWrapperImpl implements EWrapper {
     @Override
     public void historicalDataEnd(int reqId, String startDateStr, String endDateStr) {
         logger.log(Logger.Level.TRACE, "historicalDataEnd: " + reqId + " " + startDateStr + " " + endDateStr);
-        requestBus.getPublisher(reqId).ifPresent(IBReqPublisher::close);
+        this.emitters.<HistoricalBar>getFlowableEmitter(reqId).ifPresent(emitter -> {
+            emitter.onComplete();
+        });
     }
 
     @Override
@@ -439,8 +457,9 @@ public class EWrapperImpl implements EWrapper {
                                 .map(np -> MessageFormat.format("NewsProvider: {0} (code={1})", np.providerName(),
                                         np.providerCode()))
                                 .collect(Collectors.joining(", ")));
-        this.requestBus.getNewsProvidersPublisher().submit(newsProviders);
-
+        this.emitters.getObservableEmitter(NewsProvidersResponse.class).ifPresent(emitter -> {
+            emitter.onNext(new NewsProvidersResponse(newsProviders));
+        });
     }
 
     @Override
@@ -475,8 +494,11 @@ public class EWrapperImpl implements EWrapper {
 
     @Override
     public void historicalDataUpdate(int reqId, Bar bar) {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'historicalDataUpdate'");
+        final var historicalBar = new HistoricalBar(reqId, bar);
+        logger.log(Logger.Level.TRACE, "historicalDataUpdate: " + historicalBar);
+        this.emitters.<HistoricalBar>getFlowableEmitter(reqId).ifPresent(emitter -> {
+            emitter.onNext(historicalBar);
+        });
     }
 
     @Override

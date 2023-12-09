@@ -48,7 +48,7 @@ public class IBTest {
             nvda.exchange("SMART");
             nvda.secType("STK");
             nvda.currency("USD");
-            ib.reqContractDetails(nvda).thenAccept((contractDetails) -> {
+            ib.contractDetailsList(nvda).thenAccept((contractDetails) -> {
                 assertNotNull(contractDetails);
                 assertTrue(contractDetails.size() > 0);
                 ContractDetails firstContractDetails = contractDetails.get(0).getContractDetails();
@@ -61,8 +61,6 @@ public class IBTest {
                 assertEquals("Semiconductors", firstContractDetails.category());
             }).join();
         } catch (TWSConnectionTimeoutException e) {
-            fail(e);
-        } catch (TWSException e) {
             fail(e);
         }
     }

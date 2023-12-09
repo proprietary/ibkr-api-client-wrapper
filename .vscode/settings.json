@@ -7,5 +7,6 @@
         "vmArgs": [
             "-Djava.util.logging.config.file=${workspaceFolder}/logging.dev.properties"
         ]
-    }
+    },
+    "java.compile.nullAnalysis.mode": "automatic"
 }

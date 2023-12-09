@@ -5,77 +5,93 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 
+import io.reactivex.rxjava3.core.BackpressureStrategy;
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Observable;
+import net.zelcon.ibkr_api_client_wrapper.response_types.*;
+import static com.google.common.base.Preconditions.*;
 import com.ib.client.*;
 
 public class RequestBus implements AutoCloseable {
-    private final ExecutorService exec;
-    private final ConcurrentHashMap<Integer, IBReqPublisher> publishers = new ConcurrentHashMap<>();
-    private final IBReqSinglePublisher<NewsProvider[]> newsProvidersPublisher;
-    private final IBReqSingleSubscriber<NewsProvider[]> newsProvidersSubscriber = new IBReqSingleSubscriber<>();
-    private final IBReqSinglePublisher<FamilyCode[]> familyCodesPublisher;
-    private final IBReqSingleSubscriber<FamilyCode[]> familyCodesSubscriber = new IBReqSingleSubscriber<>();
-    private final IBReqSinglePublisher<Long> currentTimePublisher;
-    private final IBReqSingleSubscriber<Long> currentTimeSubscriber = new IBReqSingleSubscriber<>();
-    private final IBReqSinglePublisher<String> managedAccountsPublisher;
-    private final IBReqSingleSubscriber<String> managedAccountsSubscriber = new IBReqSingleSubscriber<>();
+    private final EClientSocket twsClient;
+    private final IBEmitterRepository emitters;
 
-    public RequestBus(ExecutorService exec) {
-        this.exec = exec;
-        this.newsProvidersPublisher = new IBReqSinglePublisher<>(exec);
-        this.newsProvidersPublisher.subscribe(this.newsProvidersSubscriber);
-        this.familyCodesPublisher = new IBReqSinglePublisher<>(exec);
-        this.familyCodesPublisher.subscribe(this.familyCodesSubscriber);
-        this.currentTimePublisher = new IBReqSinglePublisher<>(exec);
-        this.currentTimePublisher.subscribe(this.currentTimeSubscriber);
-        this.managedAccountsPublisher = new IBReqSinglePublisher<>(exec);
-        this.managedAccountsPublisher.subscribe(this.managedAccountsSubscriber);
+    // these are special cases because they don't have a request ID associated
+    // with the request/response cycle in the TWS API
+    private final Observable<CurrentTimeResponse> currentTimeObservable;
+    private final Observable<FamilyCodesResponse> familyCodesObservable;
+    private final Observable<ManagedAccountsResponse> managedAccountsObservable;
+    private final Observable<NewsProvidersResponse> newsProvidersObservable;
+
+    protected IBEmitterRepository getEmitters() {
+        return emitters;
     }
 
-    public Optional<IBReqPublisher> getPublisher(int requestId) {
-        return Optional.ofNullable(publishers.get(requestId));
+    public Flowable<HistoricalBar> registerHistoricalBarEmitter(int requestId) {
+        checkArgument(requestId > 0, "Request ID must be greater than 0.");
+        if (getEmitters().<HistoricalBar>getFlowableEmitter(requestId).isPresent()) {
+            throw new IllegalStateException("Library attempted to create a Request ID that already exists (request ID="
+                    + requestId + "). This is a serious error in the logic of the library.");
+        }
+        final var f = Flowable.<HistoricalBar>create(emitter -> {
+            getEmitters().<HistoricalBar>addIbEmitter(requestId, emitter);
+            emitter.setCancellable(() -> {
+                getEmitters().removeIbEmitter(requestId);
+                twsClient.cancelHistoricalData(requestId);
+            });
+        }, BackpressureStrategy.BUFFER);
+        return f;
     }
 
-    public void register(int requestId) {
-        publishers.putIfAbsent(requestId, new IBReqPublisher(exec));
+    public Flowable<ContractDetailsResponse> registerContractDetailsEmitter(int requestId) {
+        checkArgument(requestId > 0, "Request ID must be greater than 0.");
+        checkState(getEmitters().<ContractDetailsResponse>getFlowableEmitter(requestId).isEmpty(),
+                "Internal library logic error: Library attempted to create two requests with the same Request ID");
+        final var f = Flowable.<ContractDetailsResponse>create(emitter -> {
+            getEmitters().<ContractDetailsResponse>addIbEmitter(requestId, emitter);
+            emitter.setCancellable(() -> {
+                getEmitters().removeIbEmitter(requestId);
+            });
+        }, BackpressureStrategy.BUFFER);
+        return f;
+    }
+
+    public RequestBus(IBEmitterRepository emitters, final EClientSocket twsClient) {
+        this.emitters = emitters;
+        this.twsClient = twsClient;
+        this.currentTimeObservable = noReqIdObservable(CurrentTimeResponse.class);
+        this.familyCodesObservable = noReqIdObservable(FamilyCodesResponse.class);
+        this.managedAccountsObservable = noReqIdObservable(ManagedAccountsResponse.class);
+        this.newsProvidersObservable = noReqIdObservable(NewsProvidersResponse.class);
+    }
+
+    private <T extends IBResponse> Observable<T> noReqIdObservable(final Class<T> clazz) {
+        return Observable.<T>create(emitter -> {
+            emitters.<T>addIbEmitter(clazz, emitter);
+            emitter.setCancellable(() -> {
+                emitters.removeIbEmitter(clazz);
+            });
+        });
+    }
+
+    public Observable<CurrentTimeResponse> getCurrentTimeObservable() {
+        return currentTimeObservable;
+    }
+
+    public Observable<FamilyCodesResponse> getFamilyCodesObservable() {
+        return familyCodesObservable;
+    }
+
+    public Observable<ManagedAccountsResponse> getManagedAccountsObservable() {
+        return managedAccountsObservable;
+    }
+
+    public Observable<NewsProvidersResponse> getNewsProvidersObservable() {
+        return newsProvidersObservable;
     }
 
     @Override
     public void close() {
-        publishers.values().forEach(IBReqPublisher::close);
-        newsProvidersPublisher.close();
-        familyCodesPublisher.close();
-        currentTimePublisher.close();
-    }
-
-    public CompletableFuture<NewsProvider[]> getNewsProviders() {
-        return this.newsProvidersSubscriber.get();
-    }
-
-    public CompletableFuture<FamilyCode[]> getFamilyCodes() {
-        return this.familyCodesSubscriber.get();
-    }
-
-    public CompletableFuture<Long> getCurrentTime() {
-        return this.currentTimeSubscriber.get();
-    }
-
-    public CompletableFuture<String> getManagedAccounts() {
-        return this.managedAccountsSubscriber.get();
-    }
-
-    public IBReqSinglePublisher<Long> getCurrentTimePublisher() {
-        return this.currentTimePublisher;
-    }
-
-    public IBReqSinglePublisher<FamilyCode[]> getFamilyCodesPublisher() {
-        return this.familyCodesPublisher;
-    }
-
-    public IBReqSinglePublisher<NewsProvider[]> getNewsProvidersPublisher() {
-        return this.newsProvidersPublisher;
-    }
-
-    public IBReqSinglePublisher<String> getManagedAccountsPublisher() {
-        return this.managedAccountsPublisher;
+        this.emitters.close();
     }
 }
